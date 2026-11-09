@@ -178,8 +178,6 @@ async function handleMessage(sock, msg, pushName = null) {
       markDrNotified(jid);
     }
 
-    if (conv.classification !== 'PENDIENTE' && conv.summarySet) return;
-
     addMessage(jid, 'user', text);
 
     const historyForAI = conv.history.slice(0, -1);
