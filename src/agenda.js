@@ -59,7 +59,8 @@ Extraé la información y respondé SOLO con un JSON válido, sin markdown, sin 
 
 Reglas:
 - date y time en la zona horaria de Argentina (UTC-3)
-- Si hay un número de día explícito ("día 4", "el 4", "4 de noviembre", etc.), ese número es la fecha — ignorá "hoy" o "mañana" si también aparecen.
+- El formato de fecha en Argentina es DD/MM (día/mes). "09/11" significa el 9 de noviembre, NO el 9 de septiembre.
+- Si hay un número de día explícito ("día 4", "el 4", "4 de noviembre", "09/11", etc.), ese número es la fecha — ignorá "hoy" o "mañana" si también aparecen.
 - Si solo dice "hoy" sin número de día, usá la fecha de hoy. Si solo dice "mañana", la de mañana.
 - Si el mes no está especificado, usá el mes actual o el siguiente si el día ya pasó.
 - advanceMinutes: si el texto pide avisar X minutos/horas antes, calculalo en minutos. Si no dice nada, usá 30.
@@ -76,7 +77,8 @@ Reglas:
 
     const [y, mo, d] = parsed.date.split('-').map(Number);
     const [hh, mm] = parsed.time.split(':').map(Number);
-    const targetDate = new Date(y, mo - 1, d, hh, mm, 0);
+    // AI returns Argentina time (UTC-3); construct as UTC by adding 3 hours
+    const targetDate = new Date(Date.UTC(y, mo - 1, d, hh + 3, mm, 0));
 
     if (isNaN(targetDate.getTime()) || targetDate <= now) return null;
 
