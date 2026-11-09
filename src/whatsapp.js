@@ -6,12 +6,18 @@ const {
   jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 const path = require('path');
+const fs = require('fs');
 const qrcode = require('qrcode-terminal');
 const logger = require('./logger');
 const { handleMessage } = require('./messageHandler');
 const { setDrJid, registerDrJid } = require('./drConfig');
 
 const AUTH_FOLDER = path.join(process.cwd(), 'auth_info');
+
+if (process.env.CLEAR_AUTH === 'true' && fs.existsSync(AUTH_FOLDER)) {
+  fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+  logger.info('auth_info cleared (CLEAR_AUTH=true)');
+}
 
 // Set PAIRING_NUMBER in .env to use pairing code instead of QR
 const PAIRING_NUMBER = process.env.PAIRING_NUMBER;
