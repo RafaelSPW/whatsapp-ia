@@ -171,7 +171,8 @@ async function handleDrCastroMessage(sock, msg) {
   }
 
   // --- Menu trigger ---
-  if (/^opciones?$/i.test(text.trim()) || text.trim() === 'menu' || text.trim() === 'menú') {
+  logger.info(`[Admin] received text: "${text}" state: ${adminState}`);
+  if (/^(opciones?|men[uú])$/i.test(text.trim())) {
     await sock.sendMessage(replyJid, { text: ADMIN_MENU });
     return;
   }
@@ -307,6 +308,7 @@ async function handleMessage(sock, msg, pushName = null) {
   const text = extractText(msg);
 
   if (isDrCastro(jid)) {
+    logger.info(`[Admin] message from Dr. Castro JID: ${jid}`);
     await handleDrCastroMessage(sock, msg);
     return;
   }
