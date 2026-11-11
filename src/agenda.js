@@ -80,7 +80,8 @@ Reglas:
     // AI returns Argentina time (UTC-3); construct as UTC by adding 3 hours
     const targetDate = new Date(Date.UTC(y, mo - 1, d, hh + 3, mm, 0));
 
-    if (isNaN(targetDate.getTime()) || targetDate <= now) return null;
+    if (isNaN(targetDate.getTime())) return null;
+    if (targetDate <= now) return { past: true };
 
     const advanceMinutes = parsed.advanceMinutes || DEFAULT_ADVANCE_MINUTES;
     const advanceDate = new Date(targetDate.getTime() - advanceMinutes * 60 * 1000);
@@ -128,7 +129,8 @@ function saveReminder(parsed) {
 // Returns { item, conflict } — conflict is the existing overlapping item or null
 async function addReminder(text) {
   const parsed = await parseAgendaWithAI(text);
-  if (!parsed) return { item: null, conflict: null };
+  if (!parsed) return { item: null, conflict: null, past: false };
+  if (parsed.past) return { item: null, conflict: null, past: true };
 
   const conflict = checkConflict(parsed.isoDate);
   if (conflict) return { item: null, conflict, pending: parsed };
