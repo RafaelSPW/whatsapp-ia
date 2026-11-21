@@ -14,7 +14,8 @@ const _origStderrWrite = process.stderr.write.bind(process.stderr);
 process.stdout.write = (chunk, ...rest) => SESSION_NOISE.some(s => String(chunk).includes(s)) ? true : _origStdoutWrite(chunk, ...rest);
 process.stderr.write = (chunk, ...rest) => SESSION_NOISE.some(s => String(chunk).includes(s)) ? true : _origStderrWrite(chunk, ...rest);
 const express = require('express');
-const { startWhatsApp } = require('./whatsapp');
+const { startWhatsApp, getLatestQR } = require('./whatsapp');
+const QRCode = require('qrcode');
 const { scheduleDailySummary, buildDailySummary } = require('./dailySummary');
 const { scheduleAgendaChecker } = require('./agenda');
 const { scheduleDailyBroadcast, sendDailyBroadcast, loadCampaign, saveCampaign } = require('./dailyBroadcast');
@@ -38,6 +39,18 @@ function apiAuth(req, res, next) {
 // ----- Public -----
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/qr', async (req, res) => {
+  const qr = getLatestQR();
+  if (!qr) {
+    return res.send('<h2>WhatsApp ya está conectado o todavía no generó QR. Esperá unos segundos y recargá.</h2>');
+  }
+  const imgData = await QRCode.toDataURL(qr, { scale: 8 });
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
+  <meta http-equiv="refresh" content="20">
+  <style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111;color:#fff;font-family:sans-serif;}img{border:8px solid #fff;border-radius:12px;}</style>
+  </head><body><h2>Escaneá con WhatsApp</h2><img src="${imgData}"/><p>Se recarga automáticamente cada 20 segundos</p></body></html>`);
 });
 
 // ----- Test / Admin API -----

@@ -65,6 +65,9 @@ const msgStore = new Map();
 
 let currentSock = null;
 let reconnectTimer = null;
+let latestQR = null;
+
+function getLatestQR() { return latestQR; }
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
@@ -99,6 +102,7 @@ async function startWhatsApp() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
+      latestQR = qr;
       if (PAIRING_NUMBER && !pairingRequested) {
         pairingRequested = true;
         try {
@@ -136,6 +140,7 @@ async function startWhatsApp() {
     }
 
     if (connection === 'open') {
+      latestQR = null;
       logger.info('WhatsApp connected successfully');
       global.whatsappSock = sock;
       exportAuthToEnv();
@@ -179,4 +184,4 @@ async function startWhatsApp() {
   return sock;
 }
 
-module.exports = { startWhatsApp };
+module.exports = { startWhatsApp, getLatestQR };
