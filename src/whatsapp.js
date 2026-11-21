@@ -70,6 +70,9 @@ let latestQR = null;
 function getLatestQR() { return latestQR; }
 
 async function startWhatsApp() {
+  const authExists = fs.existsSync(AUTH_FOLDER) && fs.readdirSync(AUTH_FOLDER).length > 0;
+  logger.info(`auth_info folder: ${AUTH_FOLDER} | exists: ${authExists} | files: ${authExists ? fs.readdirSync(AUTH_FOLDER).join(', ') : 'none'}`);
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
   const sockOptions = {
@@ -77,14 +80,9 @@ async function startWhatsApp() {
     printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
     generateHighQualityLinkPreview: false,
-    // Required so WhatsApp can request re-delivery when it can't decrypt a message.
-    // Must return undefined (not an empty object) when not found.
+    browser: ['Chrome (Linux)', '', ''],
     getMessage: async (key) => msgStore.get(key.id),
   };
-
-  if (!PAIRING_NUMBER) {
-    sockOptions.browser = ['Chrome (Linux)', '', ''];
-  }
 
   // Close previous socket to avoid stream conflicts (code 440)
   if (currentSock) {
