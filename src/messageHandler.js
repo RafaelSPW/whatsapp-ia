@@ -15,8 +15,10 @@ const {
   markSummarySent,
   markDrNotified,
 } = require('./conversationStore');
+const { sendDailyBroadcast, loadCampaign, saveCampaign } = require('./dailyBroadcast');
+const { getContacts, addContacts, clearContacts, parseContactsText, formatContactsForDisplay } = require('./broadcastContacts');
 
-// Pending agenda item awaiting Dr. Castro's confirmation
+// Pending agenda item awaiting admin's confirmation
 let pendingAgendaItem = null;
 
 // Admin menu state
@@ -26,6 +28,11 @@ const ADMIN_STATE = {
   WAIT_CATALOG_UPLOAD: 'WAIT_CATALOG_UPLOAD',
   WAIT_CATALOG_MODIFY_INDEX: 'WAIT_CATALOG_MODIFY_INDEX',
   WAIT_CATALOG_MODIFY_DATA: 'WAIT_CATALOG_MODIFY_DATA',
+  WAIT_CAMPAIGN_CONFIG: 'WAIT_CAMPAIGN_CONFIG',
+  WAIT_CONTACTS_ACTION: 'WAIT_CONTACTS_ACTION',
+  WAIT_CONTACTS_ADD: 'WAIT_CONTACTS_ADD',
+  WAIT_BROADCAST_ACTION: 'WAIT_BROADCAST_ACTION',
+  WAIT_BROADCAST_CUSTOM_MSG: 'WAIT_BROADCAST_CUSTOM_MSG',
 };
 
 let adminState = ADMIN_STATE.IDLE;
@@ -34,27 +41,32 @@ let catalogModifyIndex = null;
 const ADMIN_MENU = `*Panel de administración*
 
 1️⃣  Cambiar número admin
-2️⃣  Subir catálogo (reemplaza el actual)
+2️⃣  Gestionar lista de contactos
 3️⃣  Ver agenda
-4️⃣  Ver catálogo
-5️⃣  Modificar catálogo
-6️⃣  Conectar base de datos de productos
-7️⃣  Contactar al desarrollador
+4️⃣  Configurar campaña (candidato y mensaje diario)
+5️⃣  Enviar difusión ahora (manual)
+6️⃣  Subir catálogo de servicios
+7️⃣  Ver / Modificar catálogo
+8️⃣  Contactar al desarrollador
 
 Respondé con el número de la opción.`;
 
 async function sendToDr(sock, text) {
+  // Brief delay so Signal session renegotiation (triggered by the incoming message)
+  // finishes before we send. Without this, the reply arrives before the admin's
+  // WhatsApp has the new session keys and shows "esperando mensaje".
+  await new Promise(r => setTimeout(r, 2000));
   const targets = getDrSendTargets();
   for (const jid of targets) {
     try {
-      await sock.sendMessage(jid, { text });
+      await sock.sendMessage(jid, { text: String(text ?? '') });
       logger.info(`Message sent to Dr. at ${jid}`);
-      return; // stop after first success
+      return;
     } catch (err) {
       logger.warn(`Failed to send to ${jid}: ${err.message}`);
     }
   }
-  logger.error('Could not deliver message to Dr. Castro on any JID');
+  logger.error('Could not deliver message to admin on any JID');
 }
 
 const processing = new Set();
@@ -99,12 +111,18 @@ async function handleDrCastroMessage(sock, msg) {
 
   const replyJid = msg.key.remoteJid;
 
+  // Use sendToDr so replies always go to a working JID (avoids @lid send failures)
+  const reply = async (str) => {
+    const text = typeof str === 'string' ? str : str?.text;
+    await sendToDr(sock, text);
+  };
+
   // --- Admin state machine ---
 
   if (adminState === ADMIN_STATE.WAIT_NEW_ADMIN_NUMBER) {
     const num = text.replace(/\D/g, '');
     if (num.length < 8) {
-      await sock.sendMessage(replyJid, { text: 'Número inválido. Enviá el número con código de país, sin + ni espacios (ej: 59891234567).' });
+      await reply('Número inválido. Enviá el número con código de país, sin + ni espacios (ej: 59891234567).');
       return;
     }
     const newJid = `${num}@s.whatsapp.net`;
@@ -112,19 +130,19 @@ async function handleDrCastroMessage(sock, msg) {
     // Update env in memory (runtime only)
     process.env.DR_CASTRO_NUMBER = num;
     adminState = ADMIN_STATE.IDLE;
-    await sock.sendMessage(replyJid, { text: `✅ Número admin actualizado a *${num}*. Los mensajes se enviarán a ese número a partir de ahora.` });
+    await reply(`✅ Número admin actualizado a *${num}*. Los mensajes se enviarán a ese número a partir de ahora.`);
     return;
   }
 
   if (adminState === ADMIN_STATE.WAIT_CATALOG_UPLOAD) {
     const items = parseCatalogText(text);
     if (!items.length) {
-      await sock.sendMessage(replyJid, { text: 'No pude leer el catálogo. Usá el formato:\nNombre | Precio | Descripción\nUna línea por producto.' });
+      await reply('No pude leer el catálogo. Usá el formato:\nNombre | Precio | Descripción\nUna línea por producto.');
       return;
     }
     saveCatalog(items);
     adminState = ADMIN_STATE.IDLE;
-    await sock.sendMessage(replyJid, { text: `✅ Catálogo guardado con *${items.length}* producto(s).\n\n${formatCatalogForDisplay(items)}` });
+    await reply(`✅ Catálogo guardado con *${items.length}* producto(s).\n\n${formatCatalogForDisplay(items)}`);
     return;
   }
 
@@ -132,18 +150,18 @@ async function handleDrCastroMessage(sock, msg) {
     const idx = parseInt(text.trim(), 10) - 1;
     const catalog = loadCatalog();
     if (isNaN(idx) || idx < 0 || idx >= catalog.length) {
-      await sock.sendMessage(replyJid, { text: `Número inválido. El catálogo tiene ${catalog.length} ítem(s). Enviá un número del 1 al ${catalog.length}, o "cancelar".` });
+      await reply(`Número inválido. El catálogo tiene ${catalog.length} ítem(s). Enviá un número del 1 al ${catalog.length}, o "cancelar".`);
       return;
     }
     if (/^cancelar$/i.test(text.trim())) {
       adminState = ADMIN_STATE.IDLE;
-      await sock.sendMessage(replyJid, { text: 'Cancelado.' });
+      await reply('Cancelado.');
       return;
     }
     catalogModifyIndex = idx;
     adminState = ADMIN_STATE.WAIT_CATALOG_MODIFY_DATA;
     const item = catalog[idx];
-    await sock.sendMessage(replyJid, {
+    await reply({
       text: `Editando: *${item.nombre}*${item.precio ? ` | $${item.precio}` : ''}${item.descripcion ? ` | ${item.descripcion}` : ''}\n\nEnviá los nuevos datos en formato:\nNombre | Precio | Descripción\n\nO "cancelar" para salir.`,
     });
     return;
@@ -153,12 +171,12 @@ async function handleDrCastroMessage(sock, msg) {
     if (/^cancelar$/i.test(text.trim())) {
       adminState = ADMIN_STATE.IDLE;
       catalogModifyIndex = null;
-      await sock.sendMessage(replyJid, { text: 'Cancelado.' });
+      await reply('Cancelado.');
       return;
     }
     const parsed = parseCatalogText(text);
     if (!parsed.length) {
-      await sock.sendMessage(replyJid, { text: 'Formato inválido. Usá: Nombre | Precio | Descripción\nO "cancelar" para salir.' });
+      await reply('Formato inválido. Usá: Nombre | Precio | Descripción\nO "cancelar" para salir.');
       return;
     }
     const catalog = loadCatalog();
@@ -166,14 +184,141 @@ async function handleDrCastroMessage(sock, msg) {
     saveCatalog(catalog);
     adminState = ADMIN_STATE.IDLE;
     catalogModifyIndex = null;
-    await sock.sendMessage(replyJid, { text: `✅ Producto actualizado.\n\n${formatCatalogForDisplay(catalog)}` });
+    await reply(`✅ Producto actualizado.\n\n${formatCatalogForDisplay(catalog)}`);
+    return;
+  }
+
+  if (adminState === ADMIN_STATE.WAIT_CONTACTS_ACTION) {
+    if (/^cancelar$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('Cancelado.');
+      return;
+    }
+    if (/^a$/i.test(text.trim())) {
+      const contacts = getContacts();
+      adminState = ADMIN_STATE.IDLE;
+      await reply(`*Lista de contactos (${contacts.length}):*\n\n${formatContactsForDisplay(contacts)}`);
+      return;
+    }
+    if (/^b$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.WAIT_CONTACTS_ADD;
+      await reply({
+        text: 'Enviá la lista de contactos. Formato (una línea por contacto):\n\nNombre | Número\n\nEjemplo:\nJuan Pérez | 5491112345678\nMaría García | 5491187654321\n\nTambién podés poner solo el número sin nombre. Los contactos se agregan a la lista existente.\nO "cancelar" para salir.',
+      });
+      return;
+    }
+    if (/^c$/i.test(text.trim())) {
+      clearContacts();
+      adminState = ADMIN_STATE.IDLE;
+      await reply('✅ Lista de contactos limpiada.');
+      return;
+    }
+    await reply('Opción inválida. Enviá a, b, c o "cancelar".');
+    return;
+  }
+
+  if (adminState === ADMIN_STATE.WAIT_CONTACTS_ADD) {
+    if (/^cancelar$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('Cancelado.');
+      return;
+    }
+    const parsed = parseContactsText(text);
+    if (!parsed.length) {
+      await reply('No pude leer ningún contacto. Usá el formato:\nNombre | Número\n\nO "cancelar".');
+      return;
+    }
+    const { total, added } = addContacts(parsed);
+    adminState = ADMIN_STATE.IDLE;
+    await reply(`✅ ${added} contacto(s) agregado(s). Total en la lista: ${total}.`);
+    return;
+  }
+
+  if (adminState === ADMIN_STATE.WAIT_BROADCAST_ACTION) {
+    if (/^cancelar$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('Cancelado.');
+      return;
+    }
+    if (/^a$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('📤 Enviando...');
+      try {
+        const { sent, failed } = await sendDailyBroadcast(sock);
+        await reply(`Difusión completada: ${sent} enviados, ${failed} fallidos.`);
+      } catch (err) {
+        await reply(`Error: ${err.message}`);
+      }
+      return;
+    }
+    if (/^b$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.WAIT_BROADCAST_CUSTOM_MSG;
+      await reply('Escribí el mensaje que querés enviar a todos los contactos.\n\nO "cancelar" para salir.');
+      return;
+    }
+    await reply('Opción inválida. Enviá a, b o "cancelar".');
+    return;
+  }
+
+  if (adminState === ADMIN_STATE.WAIT_BROADCAST_CUSTOM_MSG) {
+    if (/^cancelar$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('Cancelado.');
+      return;
+    }
+    adminState = ADMIN_STATE.IDLE;
+    const customMessage = text.trim();
+    const contacts = getContacts();
+    if (!contacts.length) {
+      await reply('La lista de contactos está vacía. Agregá contactos primero (opción 2).');
+      return;
+    }
+    await reply(`📤 Enviando a ${contacts.length} contactos...`);
+    let sent = 0;
+    let failed = 0;
+    for (const contact of contacts) {
+      const jid = `${contact.phone}@s.whatsapp.net`;
+      try {
+        await sock.sendMessage(jid, { text: customMessage });
+        sent++;
+        await new Promise(r => setTimeout(r, 1500));
+      } catch {
+        failed++;
+      }
+    }
+    await reply(`Campaña enviada: ${sent} enviados, ${failed} fallidos.`);
+    return;
+  }
+
+  if (adminState === ADMIN_STATE.WAIT_CAMPAIGN_CONFIG) {
+    if (/^cancelar$/i.test(text.trim())) {
+      adminState = ADMIN_STATE.IDLE;
+      await reply('Cancelado.');
+      return;
+    }
+    const parts = text.split('|').map(p => p.trim());
+    if (!parts[0]) {
+      await reply('Formato inválido. Usá: Nombre candidato | Información | Mensaje del día\nO "cancelar".');
+      return;
+    }
+    const campaign = loadCampaign();
+    campaign.candidateName = parts[0];
+    if (parts[1]) campaign.candidateTitle = parts[1];
+    if (parts[2]) campaign.candidateBio = parts[2];
+    if (parts[3]) campaign.info = parts[3];
+    if (parts[4]) campaign.dailyMessage = parts[4];
+    else campaign.dailyMessage = null; // auto-generate
+    saveCampaign(campaign);
+    adminState = ADMIN_STATE.IDLE;
+    const titleStr = campaign.candidateTitle ? ` (${campaign.candidateTitle})` : '';
+    await reply(`✅ Campaña actualizada.\nCandidato: ${campaign.candidateName}${titleStr}\nBiografía: ${campaign.candidateBio || 'No configurada'}\nMensaje del día: ${campaign.dailyMessage || 'Se genera automáticamente'}`);
     return;
   }
 
   // --- Menu trigger ---
   logger.info(`[Admin] received text: "${text}" state: ${adminState}`);
   if (/^(opciones?|men[uú])$/i.test(text.trim())) {
-    await sock.sendMessage(replyJid, { text: ADMIN_MENU });
+    await reply(ADMIN_MENU);
     return;
   }
 
@@ -181,20 +326,21 @@ async function handleDrCastroMessage(sock, msg) {
   const opt = text.trim();
   if (/^1$/.test(opt)) {
     adminState = ADMIN_STATE.WAIT_NEW_ADMIN_NUMBER;
-    await sock.sendMessage(replyJid, { text: '📱 Enviá el nuevo número admin con código de país, sin + ni espacios.\nEjemplo: 59891234567\n\nO "cancelar" para salir.' });
+    await reply('📱 Enviá el nuevo número admin con código de país, sin + ni espacios.\nEjemplo: 59891234567\n\nO "cancelar" para salir.');
     return;
   }
   if (/^2$/.test(opt)) {
-    adminState = ADMIN_STATE.WAIT_CATALOG_UPLOAD;
-    await sock.sendMessage(replyJid, {
-      text: '📋 Enviá el catálogo en este formato (una línea por producto):\n\nNombre | Precio | Descripción\n\nEjemplo:\nConsulta inicial | 1500 | Primera consulta sin cargo\nAsesoría laboral | 3000 | Estudio del caso\n\n⚠️ Esto reemplaza el catálogo actual. O enviá "cancelar" para salir.',
+    const contacts = getContacts();
+    adminState = ADMIN_STATE.WAIT_CONTACTS_ACTION;
+    await reply({
+      text: `📋 *Gestionar contactos de difusión*\n\nContactos actuales: ${contacts.length}\n\nElegí una acción:\na — Ver lista\nb — Agregar contactos\nc — Limpiar lista\n\nO "cancelar" para salir.`,
     });
     return;
   }
   if (/^3$/.test(opt)) {
     const items = loadAgenda();
     if (!items.length) {
-      await sock.sendMessage(replyJid, { text: '📅 La agenda está vacía.' });
+      await reply('📅 La agenda está vacía.');
       return;
     }
     const now = new Date();
@@ -202,42 +348,60 @@ async function handleDrCastroMessage(sock, msg) {
       .filter(i => new Date(i.isoDate) >= now)
       .sort((a, b) => new Date(a.isoDate) - new Date(b.isoDate));
     if (!upcoming.length) {
-      await sock.sendMessage(replyJid, { text: '📅 No hay turnos futuros agendados.' });
+      await reply('📅 No hay eventos futuros agendados.');
       return;
     }
     const lines = upcoming.map(i => {
       const d = new Date(i.isoDate);
       const fecha = d.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
       const hora = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-      return `📌 ${fecha} a las ${hora}\n   ${i.description}${i.clientPhone ? `\n   Cliente: ${i.clientPhone}` : ''}`;
+      return `📌 ${fecha} a las ${hora}\n   ${i.description}${i.clientPhone ? `\n   Contacto: ${i.clientPhone}` : ''}`;
     });
-    await sock.sendMessage(replyJid, { text: `*Agenda — próximos turnos:*\n\n${lines.join('\n\n')}` });
+    await reply(`*Agenda — próximos eventos:*\n\n${lines.join('\n\n')}`);
     return;
   }
   if (/^4$/.test(opt)) {
-    const catalog = loadCatalog();
-    await sock.sendMessage(replyJid, { text: `*Catálogo actual:*\n\n${formatCatalogForDisplay(catalog)}` });
+    const campaign = loadCampaign();
+    adminState = ADMIN_STATE.WAIT_CAMPAIGN_CONFIG;
+    await reply({
+      text: `📣 *Configurar campaña*\n\nConfiguración actual:\nNombre: ${campaign.candidateName || 'No configurado'}\nTítulo/cargo: ${campaign.candidateTitle || 'No configurado'}\nBiografía: ${campaign.candidateBio ? campaign.candidateBio.slice(0, 80) + '...' : 'No configurada'}\nInfo campaña: ${campaign.info ? campaign.info.slice(0, 80) + '...' : 'No configurada'}\nMensaje del día: ${campaign.dailyMessage ? campaign.dailyMessage.slice(0, 80) + '...' : 'Se genera automáticamente'}\n\nEnviá los nuevos datos en este formato:\nNombre | Título/cargo | Biografía | Info de campaña | Mensaje del día\n\nEjemplo:\nJuan Pérez | Ing. | Ingeniero civil, 20 años en gestión pública | Candidato a intendente por el partido X | Seguimos creciendo juntos.\n\nEl título/cargo, biografía, info y mensaje del día son opcionales. Si omitís el mensaje se genera automáticamente.\n\nO "cancelar" para salir.`,
+    });
     return;
   }
   if (/^5$/.test(opt)) {
-    const catalog = loadCatalog();
-    if (!catalog.length) {
-      await sock.sendMessage(replyJid, { text: 'El catálogo está vacío. Primero subí uno con la opción 2.' });
-      return;
-    }
-    adminState = ADMIN_STATE.WAIT_CATALOG_MODIFY_INDEX;
-    const list = catalog.map((item, i) => `${i + 1}. ${item.nombre}`).join('\n');
-    await sock.sendMessage(replyJid, { text: `*¿Qué producto querés modificar?*\n\n${list}\n\nEnviá el número del producto.` });
+    const campaign = loadCampaign();
+    const contacts = getContacts();
+    const preview = campaign.dailyMessage
+      ? campaign.dailyMessage.slice(0, 100) + (campaign.dailyMessage.length > 100 ? '...' : '')
+      : 'Se genera automáticamente con IA';
+    adminState = ADMIN_STATE.WAIT_BROADCAST_ACTION;
+    await reply({
+      text: `📤 *Enviar campaña ahora*\n\nContactos en la lista: ${contacts.length}\nMensaje configurado: ${preview}\n\na — Enviar mensaje configurado\nb — Escribir mensaje personalizado\n\nO "cancelar" para salir.`,
+    });
     return;
   }
   if (/^6$/.test(opt)) {
-    await sock.sendMessage(replyJid, {
-      text: '🗄️ *Conexión a base de datos de productos*\n\nEsta funcionalidad está en desarrollo. Para conectar una base de datos externa, contactá al desarrollador (opción 7).',
+    adminState = ADMIN_STATE.WAIT_CATALOG_UPLOAD;
+    await reply({
+      text: '📋 Enviá el catálogo en este formato (una línea por ítem):\n\nNombre | Precio | Descripción\n\n⚠️ Esto reemplaza el catálogo actual. O enviá "cancelar" para salir.',
     });
     return;
   }
   if (/^7$/.test(opt)) {
-    await sock.sendMessage(replyJid, {
+    const catalog = loadCatalog();
+    if (!catalog.length) {
+      await reply(`*Catálogo actual:*\n\nVacío.`);
+      return;
+    }
+    adminState = ADMIN_STATE.WAIT_CATALOG_MODIFY_INDEX;
+    const list = catalog.map((item, i) => `${i + 1}. ${item.nombre}`).join('\n');
+    await reply({
+      text: `*Catálogo actual:*\n\n${formatCatalogForDisplay(catalog)}\n\n*¿Qué ítem querés modificar?*\n${list}\n\nEnviá el número o "cancelar".`,
+    });
+    return;
+  }
+  if (/^8$/.test(opt)) {
+    await reply({
       text: '👨‍💻 *Contacto del desarrollador*\n\nRafael Núñez\nWhatsApp: +598 94 032 474\nEmail: rafaelnunezinzaurralde@gmail.com',
     });
     return;
@@ -248,7 +412,7 @@ async function handleDrCastroMessage(sock, msg) {
     if (/^s[ií]|^confirmar|^dale|^ok/i.test(text)) {
       const item = saveReminder(pendingAgendaItem);
       pendingAgendaItem = null;
-      await sock.sendMessage(replyJid, { text: formatReminderConfirmation(item) });
+      await reply(formatReminderConfirmation(item));
       if (item.clientPhone) {
         const notified = await notifyClient(sock, item);
         if (notified) {
@@ -259,9 +423,9 @@ async function handleDrCastroMessage(sock, msg) {
       }
     } else if (/^no|^cancel/i.test(text)) {
       pendingAgendaItem = null;
-      await sock.sendMessage(replyJid, { text: 'Entendido, no se agendó.' });
+      await reply('Entendido, no se agendó.');
     } else {
-      await sock.sendMessage(replyJid, { text: 'Respondé "sí" para confirmar o "no" para cancelar.' });
+      await reply('Respondé "sí" para confirmar o "no" para cancelar.');
     }
     return;
   }
@@ -276,11 +440,11 @@ async function handleDrCastroMessage(sock, msg) {
       const d = new Date(conflict.isoDate);
       const dateStr = d.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
       const timeStr = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-      await sock.sendMessage(replyJid, {
+      await reply({
         text: `Ya tenés algo agendado cerca de ese horario: "${conflict.description}" el ${dateStr} a las ${timeStr}. ¿Confirmás igual? (sí / no)`,
       });
     } else if (item) {
-      await sock.sendMessage(replyJid, { text: formatReminderConfirmation(item) });
+      await reply(formatReminderConfirmation(item));
       if (item.clientPhone) {
         const notified = await notifyClient(sock, item);
         if (notified) {
@@ -290,9 +454,9 @@ async function handleDrCastroMessage(sock, msg) {
         }
       }
     } else if (past) {
-      await sock.sendMessage(replyJid, { text: 'Esa fecha y hora ya pasaron. Indicá una hora futura.' });
+      await reply('Esa fecha y hora ya pasaron. Indicá una hora futura.');
     } else {
-      await sock.sendMessage(replyJid, { text: 'No pude interpretar la fecha. Usa este formato:\nAgendar manana a las 10:00 llamar a Juan\nAgendar 15/11 a las 09:30 audiencia' });
+      await reply('No pude interpretar la fecha. Usa este formato:\nAgendar manana a las 10:00 llamar a Juan\nAgendar 15/11 a las 09:30 audiencia');
     }
   }
 }
@@ -308,7 +472,7 @@ async function handleMessage(sock, msg, pushName = null) {
   const text = extractText(msg);
 
   if (isDrCastro(jid)) {
-    logger.info(`[Admin] message from Dr. Castro JID: ${jid}`);
+    logger.info(`[Admin] message from admin JID: ${jid}`);
     await handleDrCastroMessage(sock, msg);
     return;
   }
@@ -342,10 +506,10 @@ async function handleMessage(sock, msg, pushName = null) {
       conv = initConversation(jid, knownClient);
     }
 
-    // Notify Dr. Castro when a known client opens a new conversation
+    // Notify admin when a known contact opens a new conversation
     if (knownClient && isNewConversation && !conv.drNotified) {
       const displayName = clientName || contactNumber;
-      const alertText = `Aviso: ${displayName} (cliente existente, numero ${contactNumber}) inicio una nueva conversacion. Se le esta atendiendo.`;
+      const alertText = `Aviso: ${displayName} (contacto registrado, numero ${contactNumber}) inicio una nueva conversacion. Se le esta atendiendo.`;
       await sendToDr(sock, alertText);
       markDrNotified(jid);
     }
@@ -373,12 +537,12 @@ async function handleMessage(sock, msg, pushName = null) {
 
     await sendHumanLike(sock, jid, replyText, text);
 
-    if (classification === 'CLIENTE_POTENCIAL' && !conv.summarySet) {
+    if (classification === 'INTERESADO' && !conv.summarySet) {
       saveClient(jid, { name: extractedName });
       await handleClientSummary(sock, jid, conv, pushName);
-    } else if (classification === 'CURIOSO' && !conv.summarySet) {
+    } else if (classification === 'CONSULTANDO' && !conv.summarySet) {
       markSummarySent(jid);
-      logger.info(`[${jid}] Classified as CURIOSO — no summary sent`);
+      logger.info(`[${jid}] Classified as CONSULTANDO — no summary sent`);
       logConversation(jid, conv, extractedName, classification);
     }
   } catch (err) {
@@ -405,11 +569,11 @@ async function handleClientSummary(sock, jid, conv, pushName = null) {
 
     await sendToDr(sock, summaryText);
     markSummarySent(jid);
-    logConversation(jid, conv, null, 'CLIENTE_POTENCIAL', conv.summary);
+    logConversation(jid, conv, null, 'INTERESADO', conv.summary);
 
-    logger.info(`[${jid}] CLIENTE_POTENCIAL — summary sent to Dr. Castro`);
+    logger.info(`[${jid}] INTERESADO — summary sent to admin`);
   } catch (err) {
-    logger.error('Failed to send summary to Dr. Castro:', err);
+    logger.error('Failed to send summary to admin:', err);
   }
 }
 

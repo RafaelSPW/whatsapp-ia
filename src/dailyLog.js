@@ -35,7 +35,7 @@ function recordConversation(jid, { name, number, classification, summary, histor
     jid,
     name: name || null,
     number,
-    classification,        // CLIENTE_POTENCIAL | CURIOSO | PENDIENTE
+    classification,        // INTERESADO | CONSULTANDO | PENDIENTE
     summary: summary || null,
     messageCount: history.length,
     recordedAt: new Date().toISOString(),

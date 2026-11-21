@@ -34,9 +34,11 @@ async function buildDailySummary() {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
 
-  const prompt = `Sos asistente del Dr. Castro, abogado. Analizá todas las conversaciones de WhatsApp del dia y generá un resumen ejecutivo para que el Dr. pueda revisarlas rapidamente.
+  const candidateName = process.env.CANDIDATE_NAME || 'el candidato';
 
-IMPORTANTE: la IA puede haber descartado como "curioso" a alguien que en realidad tenia un caso interesante. Revisá con criterio propio y señalá si hay algun caso descartado que merece atencion.
+  const prompt = `Sos asistente del director de campaña de ${candidateName}. Analizá todas las conversaciones de WhatsApp del dia y generá un resumen ejecutivo para que el director pueda revisarlas rapidamente.
+
+IMPORTANTE: la IA puede haber descartado como "consultando" a alguien que en realidad quería participar activamente. Revisá con criterio propio y señalá si hay algun contacto descartado que merece atención.
 
 CONVERSACIONES DE HOY (${date}):
 
@@ -47,11 +49,11 @@ Generá el resumen en este formato (texto plano, sin emojis, sin asteriscos):
 RESUMEN DIARIO - ${date}
 Total de conversaciones: ${entries.length}
 
-CLIENTES QUE QUIEREN REUNION:
-[listado de los que clasificaron como CLIENTE_POTENCIAL con nombre/numero y una linea del caso]
+CONTACTOS INTERESADOS EN PARTICIPAR:
+[listado de los que clasificaron como INTERESADO con nombre/numero y cómo quieren participar]
 
-CASOS DESCARTADOS QUE PODRIAN MERECER ATENCION:
-[listado de los clasificados como CURIOSO pero que a tu criterio tienen un caso concreto, con nombre/numero y por que]
+CONTACTOS DESCARTADOS QUE PODRIAN MERECER ATENCION:
+[listado de los clasificados como CONSULTANDO pero que a tu criterio mostraron interes real, con nombre/numero y por que]
 
 SIN CLASIFICAR / INCOMPLETOS:
 [conversaciones que quedaron en PENDIENTE]
@@ -66,7 +68,7 @@ OBSERVACIONES GENERALES:
 function scheduleDailySummary(sock) {
   // Every day at 20:00, Argentina time (UTC-3 = 23:00 UTC)
   cron.schedule('0 23 * * *', async () => {
-    logger.info('Sending daily summary to Dr. Castro...');
+    logger.info('Sending daily summary to admin...');
     try {
       const summary = await buildDailySummary();
       await sendToDr(sock, summary);

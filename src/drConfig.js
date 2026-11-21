@@ -20,12 +20,14 @@ function persistJid(data) {
   fs.writeFileSync(JID_FILE, JSON.stringify(data), 'utf8');
 }
 
-const fallbackJid = `${process.env.DR_CASTRO_NUMBER}@s.whatsapp.net`;
+// Support ADMIN_NUMBER (new) and DR_CASTRO_NUMBER (legacy) env vars
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER || process.env.DR_CASTRO_NUMBER;
+const fallbackJid = `${ADMIN_NUMBER}@s.whatsapp.net`;
 
-// JID we use to SEND to Dr. Castro — updated when he registers
+// JID we use to SEND to the admin — updated when they register
 let sendJid = fallbackJid;
 
-// All JIDs that identify incoming messages from Dr. Castro
+// All JIDs that identify incoming messages from the admin
 const knownJids = new Set([fallbackJid]);
 
 const persisted = loadPersistedJid();
@@ -38,12 +40,17 @@ function getDrJid() {
   return sendJid;
 }
 
-// Returns JIDs to try when sending to Dr. Castro
-// @lid first (active encrypted session), @s.whatsapp.net as fallback
+// Returns JIDs to try when sending to the admin.
+// LID first — in newer WhatsApp the Signal session is indexed by LID.
+// Sending to @s.whatsapp.net when session is stored under @lid causes "esperando mensaje".
 function getDrSendTargets() {
   const targets = [];
-  if (sendJid !== fallbackJid) targets.push(sendJid); // @lid if registered
-  targets.push(fallbackJid); // @s.whatsapp.net fallback
+  // Add LID if registered (comes from onWhatsApp result[0].lid)
+  for (const jid of knownJids) {
+    if (jid.endsWith('@lid')) targets.push(jid);
+  }
+  // Always include @s.whatsapp.net as fallback
+  if (!targets.includes(fallbackJid)) targets.push(fallbackJid);
   return targets;
 }
 
@@ -64,7 +71,7 @@ function isDrCastro(jid) {
   if (knownJids.has(jid)) return true;
   // Match by phone number regardless of JID suffix (@s.whatsapp.net vs @lid)
   const phone = jid.split('@')[0];
-  if (phone === process.env.DR_CASTRO_NUMBER) {
+  if (phone === ADMIN_NUMBER) {
     knownJids.add(jid); // cache for future messages
     return true;
   }

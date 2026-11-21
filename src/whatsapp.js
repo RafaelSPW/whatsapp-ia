@@ -2,11 +2,10 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  makeInMemoryStore,
-  jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 const path = require('path');
 const fs = require('fs');
+const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const logger = require('./logger');
 const { handleMessage } = require('./messageHandler');
@@ -19,8 +18,14 @@ if (process.env.CLEAR_AUTH === 'true' && fs.existsSync(AUTH_FOLDER)) {
   logger.info('auth_info cleared (CLEAR_AUTH=true)');
 }
 
-// Set PAIRING_NUMBER in .env to use pairing code instead of QR
 const PAIRING_NUMBER = process.env.PAIRING_NUMBER;
+
+// Module-level message store for getMessage retries.
+// Keyed by message ID — persists across reconnects.
+const msgStore = new Map();
+
+let currentSock = null;
+let reconnectTimer = null;
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
@@ -28,14 +33,26 @@ async function startWhatsApp() {
   const sockOptions = {
     auth: state,
     printQRInTerminal: false,
-    logger: require('pino')({ level: 'silent' }),
+    logger: pino({ level: 'silent' }),
     generateHighQualityLinkPreview: false,
+    // Required so WhatsApp can request re-delivery when it can't decrypt a message.
+    // Must return undefined (not an empty object) when not found.
+    getMessage: async (key) => msgStore.get(key.id),
   };
-  // Pairing code requires no browser override — WhatsApp rejects linking when browser is spoofed
+
   if (!PAIRING_NUMBER) {
     sockOptions.browser = ['Chrome (Linux)', '', ''];
   }
+
+  // Close previous socket to avoid stream conflicts (code 440)
+  if (currentSock) {
+    try { currentSock.end(); } catch {}
+    currentSock = null;
+  }
+
   const sock = makeWASocket(sockOptions);
+  currentSock = sock;
+  global.whatsappSock = sock;
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -51,7 +68,6 @@ async function startWhatsApp() {
           console.log(`\n>>> Ingresa este codigo en WhatsApp > Dispositivos vinculados > Vincular con numero: ${code}\n`);
         } catch (err) {
           logger.error(`Failed to get pairing code: ${err.message}`);
-          logger.info('Falling back to QR code:');
           qrcode.generate(qr, { small: true });
         }
       } else if (!PAIRING_NUMBER) {
@@ -61,47 +77,60 @@ async function startWhatsApp() {
     }
 
     if (connection === 'close') {
+      if (sock !== currentSock) return;
+
       const code = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = code !== DisconnectReason.loggedOut;
-      logger.warn(`Connection closed (code ${code}). Reconnecting: ${shouldReconnect}`);
-      if (shouldReconnect) {
-        setTimeout(() => startWhatsApp(), 5000);
+      logger.warn(`Connection closed (code ${code})`);
+
+      if (code === DisconnectReason.loggedOut) {
+        logger.warn('Session logged out. Clearing auth and reconnecting...');
+        try { fs.rmSync(AUTH_FOLDER, { recursive: true, force: true }); } catch {}
       }
+
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(async () => {
+        reconnectTimer = null;
+        try { await startWhatsApp(); } catch (err) {
+          logger.error('Reconnect failed:', err.message);
+        }
+      }, 5000);
     }
 
     if (connection === 'open') {
       logger.info('WhatsApp connected successfully');
-      // Resolve Dr. Castro's real JID (may be @lid in newer WhatsApp versions)
+      global.whatsappSock = sock;
       try {
-        const results = await sock.onWhatsApp(process.env.DR_CASTRO_NUMBER);
-        logger.info(`onWhatsApp result for Dr. Castro: ${JSON.stringify(results)}`);
-        if (results && results.length > 0) {
+        const results = await sock.onWhatsApp(process.env.ADMIN_NUMBER);
+        logger.info(`onWhatsApp result for Admin: ${JSON.stringify(results)}`);
+        if (results?.length > 0) {
           setDrJid(results[0].jid);
-          logger.info(`Dr. Castro JID resolved: ${results[0].jid}`);
-          // Also register the @lid so incoming messages are recognized
+          logger.info(`Admin JID resolved: ${results[0].jid}`);
           if (results[0].lid) {
-            registerDrJid(results[0].lid);
-            logger.info(`Dr. Castro LID registered: ${results[0].lid}`);
+            setDrJid(results[0].lid);
+            logger.info(`Admin LID set as send target: ${results[0].lid}`);
           }
         } else {
-          logger.warn('onWhatsApp returned no results for DR_CASTRO_NUMBER');
+          logger.warn('onWhatsApp returned no results for ADMIN_NUMBER');
         }
       } catch (e) {
-        logger.warn(`Could not resolve Dr. Castro JID: ${e.message}`);
+        logger.warn(`Could not resolve Admin JID: ${e.message}`);
       }
     }
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-
     for (const msg of messages) {
+      // Store every message (in and out) so getMessage can serve retries
+      if (msg.key?.id && msg.message) {
+        msgStore.set(msg.key.id, msg.message);
+      }
+
+      if (type !== 'notify') continue;
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
       const jid = msg.key.remoteJid;
-      if (jid.endsWith('@g.us')) continue;
-      if (jid.endsWith('@newsletter')) continue;
+      if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
 
       await handleMessage(sock, msg, msg.pushName || null);
     }

@@ -45,7 +45,7 @@ async function parseAgendaWithAI(text) {
 
   const prompt = `Hoy es ${nowStr} (hora local Argentina, UTC-3).
 
-El siguiente mensaje fue enviado por un abogado para agendar un recordatorio o llamada:
+El siguiente mensaje fue enviado por el director de campaña para agendar un recordatorio o llamada:
 "${text}"
 
 Extraé la información y respondé SOLO con un JSON válido, sin markdown, sin explicaciones:
@@ -157,7 +157,7 @@ async function notifyClient(sock, item) {
   const jid = `${item.clientPhone}@s.whatsapp.net`;
   try {
     await sock.sendMessage(jid, {
-      text: `Hola, le confirmo que el Dr. Castro se va a comunicar con usted el ${dateStr} a las ${timeStr}. Por favor este disponible en este numero.`,
+      text: `Hola, le confirmamos que nuestro equipo se va a comunicar con usted el ${dateStr} a las ${timeStr}. Por favor este disponible en este numero.`,
     });
     logger.info(`Client notified: ${item.clientPhone} for "${item.description}"`);
     return true;
