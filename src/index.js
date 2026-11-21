@@ -130,10 +130,17 @@ app.get('/api/daily-summary', apiAuth, async (req, res) => {
   }
 });
 
+function openBrowser(url) {
+  const { exec } = require('child_process');
+  const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
+  exec(cmd, () => {});
+}
+
 function startServer(port) {
   const server = app.listen(port, () => {
     logger.info(`HTTP server running on port ${port}`);
     if (!API_SECRET) logger.warn('API_SECRET not set — /api/* routes are unprotected');
+    if (process.env.NODE_ENV !== 'production') openBrowser(`http://localhost:${port}/qr`);
   });
   server.on('error', err => {
     if (err.code === 'EADDRINUSE') {
