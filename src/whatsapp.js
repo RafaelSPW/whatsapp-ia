@@ -114,8 +114,11 @@ async function startWhatsApp() {
           qrcode.generate(qr, { small: true });
         }
       } else if (!PAIRING_NUMBER) {
-        logger.info('Scan this QR code with WhatsApp:');
-        qrcode.generate(qr, { small: true });
+        const QRCode = require('qrcode');
+        const qrString = await QRCode.toString(qr, { type: 'utf8', small: false });
+        console.log('\n\n========= ESCANEÁ ESTE QR CON WHATSAPP =========\n');
+        console.log(qrString);
+        console.log('=================================================\n');
       }
     }
 
