@@ -13,6 +13,45 @@ const { setDrJid, registerDrJid } = require('./drConfig');
 
 const AUTH_FOLDER = path.join(process.cwd(), 'auth_info');
 
+// Restore session from AUTH_DATA env var (base64-encoded tar) if auth folder is missing.
+// This allows Railway (ephemeral filesystem) to survive redeploys.
+function restoreAuthFromEnv() {
+  if (!process.env.AUTH_DATA) return;
+  if (fs.existsSync(AUTH_FOLDER) && fs.readdirSync(AUTH_FOLDER).length > 0) return;
+  try {
+    fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+    const files = JSON.parse(Buffer.from(process.env.AUTH_DATA, 'base64').toString('utf8'));
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(AUTH_FOLDER, name), JSON.stringify(content));
+    }
+    logger.info('Session restored from AUTH_DATA env var');
+  } catch (err) {
+    logger.warn('Could not restore auth from AUTH_DATA: ' + err.message);
+  }
+}
+
+// Serialize current auth_info to a base64 JSON string and log it,
+// so the user can copy it into the AUTH_DATA env var.
+function exportAuthToEnv() {
+  if (!fs.existsSync(AUTH_FOLDER)) return;
+  try {
+    const files = {};
+    for (const f of fs.readdirSync(AUTH_FOLDER)) {
+      const full = path.join(AUTH_FOLDER, f);
+      if (fs.statSync(full).isFile()) {
+        try { files[f] = JSON.parse(fs.readFileSync(full, 'utf8')); } catch { files[f] = fs.readFileSync(full, 'utf8'); }
+      }
+    }
+    const encoded = Buffer.from(JSON.stringify(files)).toString('base64');
+    logger.info('AUTH_DATA (copy this to Railway env var):\n' + encoded);
+    console.log('\n>>> AUTH_DATA para Railway (copiá este valor como variable de entorno AUTH_DATA):\n' + encoded + '\n');
+  } catch (err) {
+    logger.warn('Could not export auth: ' + err.message);
+  }
+}
+
+restoreAuthFromEnv();
+
 if (process.env.CLEAR_AUTH === 'true' && fs.existsSync(AUTH_FOLDER)) {
   fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
   logger.info('auth_info cleared (CLEAR_AUTH=true)');
@@ -99,6 +138,7 @@ async function startWhatsApp() {
     if (connection === 'open') {
       logger.info('WhatsApp connected successfully');
       global.whatsappSock = sock;
+      exportAuthToEnv();
       try {
         const results = await sock.onWhatsApp(process.env.ADMIN_NUMBER);
         logger.info(`onWhatsApp result for Admin: ${JSON.stringify(results)}`);
