@@ -17,7 +17,6 @@ const express = require('express');
 const { startWhatsApp, getLatestQR } = require('./whatsapp');
 const QRCode = require('qrcode');
 const { scheduleDailySummary, buildDailySummary } = require('./dailySummary');
-const { scheduleAgendaChecker } = require('./agenda');
 const { scheduleDailyBroadcast, sendDailyBroadcast, loadCampaign, saveCampaign } = require('./dailyBroadcast');
 const { getContacts, addContacts, clearContacts, parseContactsText } = require('./broadcastContacts');
 const logger = require('./logger');
@@ -165,7 +164,6 @@ startWhatsApp()
   .then(() => {
     scheduleDailyBroadcast(sockProxy);
     scheduleDailySummary(sockProxy);
-    scheduleAgendaChecker(sockProxy);
   })
   .catch(err => {
     logger.error('Failed to start WhatsApp:', err);

@@ -4,7 +4,6 @@ const { getAIResponse, generateFinalSummary, transcribeAudio } = require('./gemi
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { getClient, saveClient, isKnownClient } = require('./clientsDb');
 const { recordConversation } = require('./dailyLog');
-const { addReminder, saveReminder, formatReminderConfirmation, notifyClient, loadAgenda, saveAgenda } = require('./agenda');
 const { isDrCastro, getDrJid, getDrSendTargets, setDrJid } = require('./drConfig');
 const { loadCatalog, saveCatalog, formatCatalogForDisplay, parseCatalogText } = require('./catalog');
 const {
@@ -17,9 +16,6 @@ const {
 } = require('./conversationStore');
 const { sendDailyBroadcast, loadCampaign, saveCampaign } = require('./dailyBroadcast');
 const { getContacts, addContacts, clearContacts, parseContactsText, formatContactsForDisplay } = require('./broadcastContacts');
-
-// Pending agenda item awaiting admin's confirmation
-let pendingAgendaItem = null;
 
 // Admin menu state
 const ADMIN_STATE = {
@@ -42,12 +38,11 @@ const ADMIN_MENU = `*Panel de administración*
 
 1️⃣  Cambiar número admin
 2️⃣  Gestionar lista de contactos
-3️⃣  Ver agenda
-4️⃣  Configurar campaña (candidato y mensaje diario)
-5️⃣  Enviar difusión ahora (manual)
-6️⃣  Subir catálogo de servicios
-7️⃣  Ver / Modificar catálogo
-8️⃣  Contactar al desarrollador
+3️⃣  Configurar campaña (candidato y mensaje diario)
+4️⃣  Enviar difusión ahora (manual)
+5️⃣  Subir catálogo de servicios
+6️⃣  Ver / Modificar catálogo
+7️⃣  Contactar al desarrollador
 
 Respondé con el número de la opción.`;
 
@@ -338,29 +333,6 @@ async function handleDrCastroMessage(sock, msg) {
     return;
   }
   if (/^3$/.test(opt)) {
-    const items = loadAgenda();
-    if (!items.length) {
-      await reply('📅 La agenda está vacía.');
-      return;
-    }
-    const now = new Date();
-    const upcoming = items
-      .filter(i => new Date(i.isoDate) >= now)
-      .sort((a, b) => new Date(a.isoDate) - new Date(b.isoDate));
-    if (!upcoming.length) {
-      await reply('📅 No hay eventos futuros agendados.');
-      return;
-    }
-    const lines = upcoming.map(i => {
-      const d = new Date(i.isoDate);
-      const fecha = d.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
-      const hora = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-      return `📌 ${fecha} a las ${hora}\n   ${i.description}${i.clientPhone ? `\n   Contacto: ${i.clientPhone}` : ''}`;
-    });
-    await reply(`*Agenda — próximos eventos:*\n\n${lines.join('\n\n')}`);
-    return;
-  }
-  if (/^4$/.test(opt)) {
     const campaign = loadCampaign();
     adminState = ADMIN_STATE.WAIT_CAMPAIGN_CONFIG;
     await reply({
@@ -368,7 +340,7 @@ async function handleDrCastroMessage(sock, msg) {
     });
     return;
   }
-  if (/^5$/.test(opt)) {
+  if (/^4$/.test(opt)) {
     const campaign = loadCampaign();
     const contacts = getContacts();
     const preview = campaign.dailyMessage
@@ -380,14 +352,14 @@ async function handleDrCastroMessage(sock, msg) {
     });
     return;
   }
-  if (/^6$/.test(opt)) {
+  if (/^5$/.test(opt)) {
     adminState = ADMIN_STATE.WAIT_CATALOG_UPLOAD;
     await reply({
       text: '📋 Enviá el catálogo en este formato (una línea por ítem):\n\nNombre | Precio | Descripción\n\n⚠️ Esto reemplaza el catálogo actual. O enviá "cancelar" para salir.',
     });
     return;
   }
-  if (/^7$/.test(opt)) {
+  if (/^6$/.test(opt)) {
     const catalog = loadCatalog();
     if (!catalog.length) {
       await reply(`*Catálogo actual:*\n\nVacío.`);
@@ -400,65 +372,13 @@ async function handleDrCastroMessage(sock, msg) {
     });
     return;
   }
-  if (/^8$/.test(opt)) {
+  if (/^7$/.test(opt)) {
     await reply({
       text: '👨‍💻 *Contacto del desarrollador*\n\nRafael Núñez\nWhatsApp: +598 94 032 474\nEmail: rafaelnunezinzaurralde@gmail.com',
     });
     return;
   }
 
-  // --- Pending agenda conflict confirmation ---
-  if (pendingAgendaItem) {
-    if (/^s[ií]|^confirmar|^dale|^ok/i.test(text)) {
-      const item = saveReminder(pendingAgendaItem);
-      pendingAgendaItem = null;
-      await reply(formatReminderConfirmation(item));
-      if (item.clientPhone) {
-        const notified = await notifyClient(sock, item);
-        if (notified) {
-          const items = loadAgenda();
-          const saved = items.find(i => i.id === item.id);
-          if (saved) { saved.clientNotified = true; saveAgenda(items); }
-        }
-      }
-    } else if (/^no|^cancel/i.test(text)) {
-      pendingAgendaItem = null;
-      await reply('Entendido, no se agendó.');
-    } else {
-      await reply('Respondé "sí" para confirmar o "no" para cancelar.');
-    }
-    return;
-  }
-
-  if (/^agend[ao]r?\s*:?\s/i.test(text)) {
-    logger.info(`Agenda command received: "${text}"`);
-    const { item, conflict, pending, past } = await addReminder(text);
-    logger.info(`Reminder result: item=${!!item} conflict=${!!conflict} past=${!!past}`);
-
-    if (conflict) {
-      pendingAgendaItem = pending;
-      const d = new Date(conflict.isoDate);
-      const dateStr = d.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
-      const timeStr = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false });
-      await reply({
-        text: `Ya tenés algo agendado cerca de ese horario: "${conflict.description}" el ${dateStr} a las ${timeStr}. ¿Confirmás igual? (sí / no)`,
-      });
-    } else if (item) {
-      await reply(formatReminderConfirmation(item));
-      if (item.clientPhone) {
-        const notified = await notifyClient(sock, item);
-        if (notified) {
-          const items = loadAgenda();
-          const saved = items.find(i => i.id === item.id);
-          if (saved) { saved.clientNotified = true; saveAgenda(items); }
-        }
-      }
-    } else if (past) {
-      await reply('Esa fecha y hora ya pasaron. Indicá una hora futura.');
-    } else {
-      await reply('No pude interpretar la fecha. Usa este formato:\nAgendar manana a las 10:00 llamar a Juan\nAgendar 15/11 a las 09:30 audiencia');
-    }
-  }
 }
 
 function extractContactNumber(jid) {
