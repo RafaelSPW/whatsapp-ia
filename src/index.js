@@ -18,7 +18,6 @@ const { startWhatsApp, getLatestQR } = require('./whatsapp');
 const QRCode = require('qrcode');
 const { scheduleDailySummary, buildDailySummary } = require('./dailySummary');
 const { scheduleDailyBroadcast, sendDailyBroadcast, loadCampaign, saveCampaign } = require('./dailyBroadcast');
-const { startFirestoreListener } = require('./firestore');
 const { getContacts, addContacts, clearContacts, parseContactsText } = require('./broadcastContacts');
 const logger = require('./logger');
 
@@ -130,29 +129,6 @@ app.get('/api/daily-summary', apiAuth, async (req, res) => {
   }
 });
 
-// POST /api/send — enviar mensaje individual desde el panel admin
-// Body: { phone: "59899123456", message: "texto", mediaUrl: "https://..." (opcional) }
-app.post('/api/send', apiAuth, async (req, res) => {
-  if (!global.whatsappSock) {
-    return res.status(503).json({ error: 'WhatsApp no conectado todavía' });
-  }
-  const { phone, message, mediaUrl } = req.body || {};
-  if (!phone || !message) {
-    return res.status(400).json({ error: 'Se requieren los campos phone y message' });
-  }
-  const jid = phone.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
-  try {
-    if (mediaUrl) {
-      await global.whatsappSock.sendMessage(jid, { image: { url: mediaUrl }, caption: message });
-    } else {
-      await global.whatsappSock.sendMessage(jid, { text: message });
-    }
-    res.json({ ok: true, phone, jid });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 function openBrowser(url) {
   const { exec } = require('child_process');
   const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
@@ -188,7 +164,6 @@ startWhatsApp()
   .then(() => {
     scheduleDailyBroadcast(sockProxy);
     scheduleDailySummary(sockProxy);
-    startFirestoreListener(sockProxy);
   })
   .catch(err => {
     logger.error('Failed to start WhatsApp:', err);
