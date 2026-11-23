@@ -1,6 +1,6 @@
 {
   "name": "dr-paul-castro-whatsapp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WhatsApp AI assistant for Dr. Paul Castro law firm",
   "main": "src/index.js",
   "scripts": {
