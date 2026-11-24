@@ -95,6 +95,14 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Map @lid JIDs → phone JIDs so outgoing replies can reach contacts
+    if (!global.lidToPhone) global.lidToPhone = new Map();
+    sock.ev.on('contacts.upsert', (contacts) => {
+      for (const c of contacts) {
+        if (c.id && c.lid) global.lidToPhone.set(c.lid, c.id);
+      }
+    });
+
     sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
       if (qr) {
         if (!pairingNumber) {
@@ -155,9 +163,7 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
         if (!msg.message) continue;
         const jid = msg.key.remoteJid;
         if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
-        // Use the last active sock for sending — WA1/WA2 silently fail for some contacts
-        const replySock = (global.whatsappSocks?.filter(Boolean).slice(-1)[0]) || sock;
-        await handleMessage(replySock, msg, msg.pushName || null);
+        await handleMessage(sock, msg, msg.pushName || null);
       }
     });
 

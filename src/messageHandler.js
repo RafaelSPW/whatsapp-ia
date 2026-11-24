@@ -403,6 +403,10 @@ function extractContactNumber(jid) {
 
 async function handleMessage(sock, msg, pushName = null) {
   const jid = msg.key.remoteJid;
+  // @lid JIDs silently fail for outgoing — resolve to phone JID when available
+  const replyJid = (jid.endsWith('@lid') && global.lidToPhone?.get(jid))
+    ? global.lidToPhone.get(jid)
+    : jid;
   const text = extractText(msg);
 
   if (isDrCastro(jid)) {
@@ -469,7 +473,9 @@ async function handleMessage(sock, msg, pushName = null) {
       logger.info(`[${jid}] Saved: ${JSON.stringify(update)}`);
     }
 
-    await sendHumanLike(sock, jid, replyText, text);
+    logger.info(`[${jid}] sending reply to ${replyJid}`);
+    await sendHumanLike(sock, replyJid, replyText, text);
+    logger.info(`[${jid}] reply sent ok`);
 
     if (classification === 'INTERESADO' && !conv.summarySet) {
       saveClient(jid, { name: extractedName });
