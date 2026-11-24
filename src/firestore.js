@@ -35,6 +35,7 @@ async function notifyAdmin(socks, msg) {
 // ── WhatsApp listener con múltiples sockets ──────────────────────────────────
 function startWhatsAppListener(socks, db) {
   let sockIdx = 0;
+  const inProgress = new Set(); // prevent double-processing on rapid snapshots
 
   db.collection('send_queue')
     .where('status', '==', 'pending')
@@ -44,6 +45,8 @@ function startWhatsAppListener(socks, db) {
         if (change.type !== 'added') continue;
 
         const doc = change.doc;
+        if (inProgress.has(doc.id)) continue;
+        inProgress.add(doc.id);
         const { to, body, mediaUrl, waFrom } = doc.data();
 
         // Use live socks (updated on reconnect) over the initial snapshot
@@ -82,6 +85,8 @@ function startWhatsAppListener(socks, db) {
           console.error(`[WhatsApp] Error enviando a ${to}:`, err.message);
           await doc.ref.update({ status: 'error', error: err.message });
           await notifyAdmin(socks, `WhatsApp → ${to}: ${err.message}`);
+        } finally {
+          inProgress.delete(doc.id);
         }
       }
     }, (err) => {

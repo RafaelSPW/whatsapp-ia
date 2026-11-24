@@ -393,6 +393,8 @@ async function handleDrCastroMessage(sock, msg) {
     return;
   }
 
+  // Default: any unrecognized text in IDLE → show menu
+  await reply(ADMIN_MENU);
 }
 
 function extractContactNumber(jid) {
