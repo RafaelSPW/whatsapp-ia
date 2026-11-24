@@ -155,7 +155,7 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
         if (!msg.message) continue;
         const jid = msg.key.remoteJid;
         if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
-        if (idx === 1) await handleMessage(sock, msg, msg.pushName || null);
+        await handleMessage(sock, msg, msg.pushName || null);
       }
     });
 
