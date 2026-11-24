@@ -105,22 +105,18 @@ async function handleDrCastroMessage(sock, msg) {
   if (!text) return;
 
   const incomingJid = msg.key.remoteJid;
-  // Reply to the exact JID the message came from so Signal session matches
   const adminNumber = process.env.ADMIN_NUMBER || process.env.DR_CASTRO_NUMBER;
-  const fallbackJid = adminNumber ? `${adminNumber}@s.whatsapp.net` : incomingJid;
+  // @lid JIDs are accepted by Baileys but messages never arrive — always use @s.whatsapp.net
+  const replyJid = adminNumber ? `${adminNumber}@s.whatsapp.net` : incomingJid.replace('@lid', '@s.whatsapp.net');
 
   const reply = async (str) => {
     const txt = typeof str === 'string' ? str : str?.text;
     await new Promise(r => setTimeout(r, 2000));
-    // Try the incoming JID first; fall back to phone-based JID
-    for (const jid of [incomingJid, fallbackJid]) {
-      try {
-        await sock.sendMessage(jid, { text: String(txt ?? '') });
-        logger.info(`[Admin] reply sent to ${jid}`);
-        return;
-      } catch (err) {
-        logger.warn(`[Admin] reply failed to ${jid}: ${err.message}`);
-      }
+    try {
+      await sock.sendMessage(replyJid, { text: String(txt ?? '') });
+      logger.info(`[Admin] reply sent to ${replyJid}`);
+    } catch (err) {
+      logger.warn(`[Admin] reply failed to ${replyJid}: ${err.message}`);
     }
   };
 
