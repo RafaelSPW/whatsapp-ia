@@ -1,225 +1,164 @@
-# WhatsApp Bot — Asistente de Marketing de Campaña
+# Bot WhatsApp IA — Campaña Álvaro
 
-Asistente de campaña para WhatsApp. Actúa como "Ana", una asistente humana del estudio de marketing, con dos funciones principales: envía diariamente información de campaña a todos los contactos registrados y responde dudas sobre la postulación del candidato.
+Asistente IA de campaña para WhatsApp. Atiende mensajes entrantes en 3 números simultáneamente, envía campañas masivas vía Firestore y notifica al administrador. Desplegado en Railway.
 
 ---
 
 ## Funciones
 
-- **Difusión diaria automática**: cada día a las 9:00 AM (Argentina) envía un mensaje de campaña a todos los contactos registrados. El mensaje puede ser fijo (configurado por el admin) o generado automáticamente por IA con la información del candidato.
-- Responde preguntas sobre la postulación: propuesta, posición política, agenda de campaña, datos del candidato.
-- Transcribe notas de voz automáticamente antes de procesarlas.
-- Simula comportamiento humano: tiempo de lectura, tiempo de escritura, errores de tipeo ocasionales con autocorrección.
-- Detecta contactos que quieren participar activamente (voluntarios, difusores) y envía un resumen al director de campaña.
-- Avisa al admin cuando un contacto conocido inicia una nueva conversación.
-- Genera un resumen diario a las 20:00 (Argentina) con todas las interacciones del día.
-- Agenda de campaña: el admin puede agendar recordatorios y eventos mediante lenguaje natural. Opcionalmente notifica al contacto.
-- Panel de administración accesible solo desde el número del admin.
+- Responde mensajes entrantes en los **3 números WhatsApp** con IA (Gemini)
+- Transcribe mensajes de voz automáticamente
+- Simula comportamiento humano: typing, delays variables, errores de tipeo ocasionales
+- Clasifica cada conversación (`INTERESADO`, `CONSULTANDO`, `PENDIENTE`)
+- Cuando un contacto es `INTERESADO`, envía resumen al admin (ADMIN_NUMBER)
+- Avisa al admin cuando un contacto conocido inicia una nueva conversación
+- Genera un resumen diario a las 20:00 (Argentina)
+- Difusión diaria automática a las 9:00 AM (Argentina)
+- Escucha la colección `send_queue` de Firestore para campañas masivas (WhatsApp y Email)
 
 ---
 
-## Panel de administración
+## Arquitectura
 
-El director de campaña accede al panel enviando `menu` u `opciones` al bot desde su WhatsApp.
-
-| Opción | Función |
-|--------|---------|
-| 1 | Cambiar número admin |
-| 2 | Gestionar lista de contactos (ver / agregar / limpiar) |
-| 3 | Ver agenda de campaña |
-| 4 | Configurar candidato y campaña |
-| 5 | Enviar difusión manual ahora |
-| 6 | Subir catálogo de servicios |
-| 7 | Ver / Modificar catálogo |
-| 8 | Contactar al desarrollador |
-
-Para agendar, el admin puede escribir frases como:
 ```
-Agendar mañana a las 10:00 llamar a Juan Pérez
-Agendar 15/11 a las 09:30 acto en la plaza
+software alvaro/
+├── src/
+│   ├── index.js              # Entry point: Express + arranque WA + Firestore
+│   ├── whatsapp.js           # Conexión Baileys multi-número (WA1/WA2/WA3)
+│   ├── messageHandler.js     # Lógica IA: recibe mensajes, responde con Gemini
+│   ├── firestore.js          # Listener send_queue: campañas WA y Email
+│   ├── gemini.js             # Integración Google Gemini
+│   ├── humanSimulator.js     # Simula comportamiento humano
+│   ├── drConfig.js           # Config número admin, mapeo @lid → JID
+│   ├── conversationStore.js  # Historial de conversaciones en memoria
+│   ├── clientsDb.js          # Base de datos de contactos conocidos
+│   ├── catalog.js            # Catálogo de servicios
+│   ├── dailyBroadcast.js     # Difusión automática diaria
+│   ├── dailySummary.js       # Resumen diario al admin
+│   ├── dailyLog.js           # Log de conversaciones del día
+│   ├── broadcastContacts.js  # Lista de contactos para difusión
+│   └── logger.js             # Logger con pino
+├── railway.toml
+└── package.json
 ```
 
 ---
 
-## Variables de entorno
+## Números WhatsApp
 
-Copiá `.env.example` a `.env` y completá los valores:
+| Variable | Número | Auth |
+|---|---|---|
+| `PAIRING_NUMBER` | 59891449672 (WA1) | `AUTH_DATA` |
+| `PAIRING_NUMBER_2` | 59892672372 (WA2) | `AUTH_DATA_2` |
+| `PAIRING_NUMBER_3` | 59892636720 (WA3) | `AUTH_DATA_3` |
 
-| Variable | Descripción | Requerida |
-|----------|-------------|-----------|
-| `GEMINI_API_KEY` | API key de Google Gemini | Sí |
-| `ADMIN_NUMBER` | Número WhatsApp del admin/director (sin + ni espacios) | Sí |
-| `PAIRING_NUMBER` | Número del bot para autenticarse sin QR (opcional) | No |
-| `PORT` | Puerto del servidor HTTP (default: 3000) | No |
-| `FIRM_NAME` | Nombre del estudio de marketing | No |
-| `CANDIDATE_NAME` | Nombre del candidato | No |
-| `CAMPAIGN_INFO` | Información de campaña para contexto de la IA | No |
-| `BROADCAST_HOUR_UTC` | Hora UTC para la difusión diaria (default: 12 = 9 AM Argentina) | No |
-
-La información de campaña también se puede actualizar en tiempo de ejecución desde el panel admin (opción 6), sin reiniciar el bot.
+Los 3 números atienden mensajes entrantes. Las campañas se distribuyen entre los 3 vía round-robin o por número específico (`waFrom` en el documento de Firestore).
 
 ---
 
-## Clasificación de contactos
+## Variables de entorno (Railway)
 
-El bot clasifica automáticamente cada conversación:
+```
+# WhatsApp — números y sesiones
+PAIRING_NUMBER=59891449672
+PAIRING_NUMBER_2=59892672372
+PAIRING_NUMBER_3=59892636720
+AUTH_DATA=<base64 sesión WA1>
+AUTH_DATA_2=<base64 sesión WA2>
+AUTH_DATA_3=<base64 sesión WA3>
+
+# Admin
+ADMIN_NUMBER=59894032474
+
+# IA
+GEMINI_API_KEY=<clave Google Gemini>
+
+# Firebase (Firestore)
+FIREBASE_PROJECT_ID=alvaro-42b7e
+FIREBASE_CLIENT_EMAIL=<service account email>
+FIREBASE_PRIVATE_KEY=<private key>
+
+# Email (Resend)
+RESEND_API_KEY=<clave Resend>
+RESEND_FROM=noreply@infocap.uk
+
+# Opcional
+API_SECRET=<clave para rutas /api/*>
+PORT=3000
+```
+
+---
+
+## Flujo de campañas (Firestore send_queue)
+
+El panel web crea documentos en `send_queue`. El bot los procesa en tiempo real.
+
+**WhatsApp:**
+```json
+{
+  "type": "whatsapp",
+  "status": "pending",
+  "to": "+59891234567",
+  "body": "Mensaje de campaña",
+  "waFrom": "59892672372"
+}
+```
+`waFrom` es opcional; si se omite, se usa round-robin entre los 3 números.
+
+**Email:**
+```json
+{
+  "type": "email",
+  "status": "pending",
+  "to": "destinatario@email.com",
+  "subject": "Asunto",
+  "body": "Cuerpo del mensaje"
+}
+```
+
+---
+
+## Clasificación de conversaciones
 
 | Clasificación | Significado |
-|---------------|-------------|
-| `INTERESADO` | Quiere participar activamente (voluntario, difusor, colaborador). Requiere nombre y teléfono. Se envía resumen al admin. |
-| `CONSULTANDO` | Solo tiene preguntas sobre la campaña, sin compromiso de participación activa. |
-| `PENDIENTE` | Conversación en curso, sin clasificación definitiva aún. |
+|---|---|
+| `INTERESADO` | Quiere participar activamente. Se envía resumen al admin. |
+| `CONSULTANDO` | Solo tiene preguntas, sin compromiso activo. |
+| `PENDIENTE` | Conversación en curso. |
 
 ---
 
-## Difusión diaria
-
-El bot envía automáticamente un mensaje a cada contacto en `data/broadcast_contacts.json`:
-
-- **Hora**: 9:00 AM Argentina (configurable vía `BROADCAST_HOUR_UTC`)
-- **Mensaje**: Se toma del campo `dailyMessage` en `data/campaign.json`. Si está vacío, se genera automáticamente con Gemini usando la información del candidato.
-- **Log**: Cada difusión queda registrada en `data/broadcast_log.json` con los contadores de envíos y el mensaje usado.
-- **Trigger manual**: desde el panel admin, opción 7.
-
----
-
-## Configuración del candidato
-
-Desde la opción 4 del panel admin se configura en formato `Nombre | Título/cargo | Biografía | Info de campaña | Mensaje del día`:
-
-```
-Juan Pérez | Ing. | Ingeniero civil, 20 años en gestión pública | Candidato a intendente por el partido X | Seguimos trabajando por nuestra ciudad.
-```
-
-- **Nombre**: nombre completo del candidato
-- **Título/cargo**: tratamiento o cargo (Ing., Dr., Lic., etc.) — se antepone al nombre en la conversación
-- **Biografía**: descripción breve del candidato para que la IA responda preguntas personales
-- **Info de campaña**: propuestas, posiciones políticas, contexto electoral
-- **Mensaje del día**: texto fijo para la difusión diaria (si se omite, se genera automáticamente con IA)
-
-También se puede configurar via API:
-```bash
-curl -X PUT http://localhost:3000/api/campaign \
-  -H "Content-Type: application/json" \
-  -d '{"candidateName":"Juan Pérez","candidateTitle":"Ing.","candidateBio":"Ingeniero civil...","info":"Candidato a intendente..."}'
-```
-
----
-
-## Gestión de contactos de difusión
-
-Los contactos para la difusión diaria son una lista separada que el admin provee. No son los contactos del teléfono.
-
-Desde el panel admin (opción 2) se puede:
-- **Ver** la lista actual
-- **Agregar** contactos con el formato `Nombre | Número` (uno por línea)
-- **Limpiar** toda la lista
-
-Ejemplo de lista para agregar:
-```
-Juan Pérez | 5491112345678
-María García | 5491187654321
-Carlos López | 59891234567
-```
-
-También via API:
-```bash
-# Ver contactos
-curl http://localhost:3000/api/contacts
-
-# Agregar contactos (JSON)
-curl -X POST http://localhost:3000/api/contacts \
-  -H "Content-Type: application/json" \
-  -d '[{"name":"Juan Pérez","phone":"5491112345678"}]'
-
-# Limpiar lista
-curl -X DELETE http://localhost:3000/api/contacts
-```
-
----
-
-## Archivos de datos
-
-| Archivo | Descripción |
-|---------|-------------|
-| `data/broadcast_contacts.json` | Lista de contactos para difusión diaria (gestionada por el admin) |
-| `data/clients.json` | Contactos que han respondido al bot (auto-gestionado) |
-| `data/campaign.json` | Configuración de campaña (candidato, título, bio, info, mensaje diario) |
-| `data/broadcast_log.json` | Historial de difusiones enviadas |
-| `data/agenda.json` | Recordatorios agendados |
-| `data/dr_jid.json` | JID del admin para envío de mensajes |
-| `data/daily_YYYY-MM-DD.json` | Log de conversaciones del día |
-| `auth_info/` | Sesión de WhatsApp (no subir al repo) |
-
----
-
-## API HTTP para testing local
-
-El servidor expone endpoints para probar funcionalidades sin usar el panel de WhatsApp. Configurá `API_SECRET` en `.env` para protegerlos (si no está configurado, quedan abiertos — solo para desarrollo local).
-
-```bash
-# Pasar la clave: header X-Api-Key o query param ?key=
-curl -H "X-Api-Key: mi_clave" http://localhost:3000/api/contacts
-```
+## API HTTP
 
 | Método | Ruta | Descripción |
-|--------|------|-------------|
+|---|---|---|
 | GET | `/health` | Estado del servidor |
-| GET | `/api/contacts` | Ver lista de contactos |
-| POST | `/api/contacts` | Agregar contactos (array JSON o texto plano) |
-| DELETE | `/api/contacts` | Limpiar lista de contactos |
+| GET | `/api/contacts` | Ver contactos de difusión |
+| POST | `/api/contacts` | Agregar contactos |
+| DELETE | `/api/contacts` | Limpiar lista |
 | GET | `/api/campaign` | Ver configuración de campaña |
 | PUT | `/api/campaign` | Actualizar campaña |
-| POST | `/api/broadcast/trigger` | Disparar difusión ahora (requiere WhatsApp conectado) |
+| POST | `/api/broadcast/trigger` | Disparar difusión manual |
 | GET | `/api/broadcast/log` | Historial de difusiones |
-| GET | `/api/daily-summary` | Generar resumen del día sin enviarlo |
+| GET | `/api/daily-summary` | Generar resumen del día |
 
 ---
 
-## Instalación y primer uso
+## Deploy
 
 ```bash
-npm install
-cp .env.example .env
-# Editá .env con tus valores
-npm run dev
+cd "software alvaro"
+railway up --detach
 ```
 
-Escaneá el QR con la cuenta de WhatsApp del bot (o usá pairing code si configuraste `PAIRING_NUMBER`).
+Las sesiones se exportan automáticamente al conectar. Copiar los valores `AUTH_DATA*` que aparecen en los logs a las variables de Railway para persistir entre deploys.
 
-El admin envía `menu` al bot desde su WhatsApp para registrar su número y acceder al panel.
+## Re-parear un número
 
----
-
-## Despliegue en Railway
-
-1. Push al repo (`.gitignore` excluye `auth_info/` y `.env`)
-2. Conectá Railway al repo
-3. Configurá las variables de entorno
-4. Creá un volumen montado en `/app/data`
-5. Subí `auth_info/` al volumen via Railway CLI
-6. Deploy
-
----
-
-## Desarrollo
-
-```bash
-npm run dev    # auto-recarga con nodemon
-npm start      # producción
-```
-
----
-
-## Dependencias principales
-
-| Paquete | Uso |
-|---------|-----|
-| `@whiskeysockets/baileys` | Integración con WhatsApp Web |
-| `@google/generative-ai` | IA: respuestas, transcripción de audio, resúmenes |
-| `node-cron` | Difusión diaria, resumen diario, agenda |
-| `express` | Servidor HTTP con health check |
-| `pino` | Logging estructurado |
+1. Borrar `AUTH_DATA_X` en Railway
+2. Hacer un nuevo deploy
+3. En los logs aparece: `>>> [WAX] Código para NÚMERO: XXXXXX`
+4. WhatsApp → Dispositivos vinculados → Vincular dispositivo → Ingresar código
 
 ---
 
