@@ -104,12 +104,24 @@ async function handleDrCastroMessage(sock, msg) {
   const text = extractText(msg);
   if (!text) return;
 
-  const replyJid = msg.key.remoteJid;
+  const incomingJid = msg.key.remoteJid;
+  // Reply to the exact JID the message came from so Signal session matches
+  const adminNumber = process.env.ADMIN_NUMBER || process.env.DR_CASTRO_NUMBER;
+  const fallbackJid = adminNumber ? `${adminNumber}@s.whatsapp.net` : incomingJid;
 
-  // Use sendToDr so replies always go to a working JID (avoids @lid send failures)
   const reply = async (str) => {
-    const text = typeof str === 'string' ? str : str?.text;
-    await sendToDr(sock, text);
+    const txt = typeof str === 'string' ? str : str?.text;
+    await new Promise(r => setTimeout(r, 2000));
+    // Try the incoming JID first; fall back to phone-based JID
+    for (const jid of [incomingJid, fallbackJid]) {
+      try {
+        await sock.sendMessage(jid, { text: String(txt ?? '') });
+        logger.info(`[Admin] reply sent to ${jid}`);
+        return;
+      } catch (err) {
+        logger.warn(`[Admin] reply failed to ${jid}: ${err.message}`);
+      }
+    }
   };
 
   // --- Admin state machine ---
