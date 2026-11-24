@@ -155,7 +155,9 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
         if (!msg.message) continue;
         const jid = msg.key.remoteJid;
         if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
-        await handleMessage(sock, msg, msg.pushName || null);
+        // Use the last active sock for sending — WA1/WA2 silently fail for some contacts
+        const replySock = (global.whatsappSocks?.filter(Boolean).slice(-1)[0]) || sock;
+        await handleMessage(replySock, msg, msg.pushName || null);
       }
     });
 
