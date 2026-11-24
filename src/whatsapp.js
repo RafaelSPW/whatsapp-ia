@@ -99,7 +99,23 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
     if (!global.lidToPhone) global.lidToPhone = new Map();
     sock.ev.on('contacts.upsert', (contacts) => {
       for (const c of contacts) {
-        if (c.id && c.lid) global.lidToPhone.set(c.lid, c.id);
+        // c.id = phone JID (@s.whatsapp.net), c.lid = lid JID (@lid)
+        if (c.id && c.lid) {
+          global.lidToPhone.set(c.lid, c.id);
+          logger.info(`[LID] mapped ${c.lid} → ${c.id}`);
+        }
+        // Log first entry shape for debugging if no lid field
+        else if (c.id) {
+          logger.info(`[LID] contact upsert: id=${c.id} lid=${c.lid} (no mapping)`);
+        }
+      }
+    });
+    sock.ev.on('contacts.update', (updates) => {
+      for (const c of updates) {
+        if (c.id && c.lid) {
+          global.lidToPhone.set(c.lid, c.id);
+          logger.info(`[LID] updated ${c.lid} → ${c.id}`);
+        }
       }
     });
 
@@ -147,7 +163,13 @@ async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
             const results = await sock.onWhatsApp(process.env.ADMIN_NUMBER);
             if (results?.length > 0) {
               setDrJid(results[0].jid);
-              if (results[0].lid) setDrJid(results[0].lid);
+              if (results[0].lid) {
+                setDrJid(results[0].lid);
+                // Pre-populate lid→phone map for the admin so replies reach them
+                if (!global.lidToPhone) global.lidToPhone = new Map();
+                global.lidToPhone.set(results[0].lid, results[0].jid);
+                logger.info(`[LID] Admin mapped: ${results[0].lid} → ${results[0].jid}`);
+              }
               logger.info(`Admin JID resolved: ${results[0].jid}`);
             }
           } catch (e) { logger.warn(`Could not resolve Admin JID: ${e.message}`); }
