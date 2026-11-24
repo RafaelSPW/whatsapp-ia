@@ -11,178 +11,178 @@ const logger = require('./logger');
 const { handleMessage } = require('./messageHandler');
 const { setDrJid, registerDrJid } = require('./drConfig');
 
-const AUTH_FOLDER = path.join(process.cwd(), 'auth_info');
+// Números configurados: PAIRING_NUMBER (principal), PAIRING_NUMBER_2, PAIRING_NUMBER_3
+const PAIRING_NUMBERS = [
+  process.env.PAIRING_NUMBER,
+  process.env.PAIRING_NUMBER_2,
+  process.env.PAIRING_NUMBER_3,
+].filter(Boolean);
 
-// Restore session from AUTH_DATA env var (base64-encoded tar) if auth folder is missing.
-// This allows Railway (ephemeral filesystem) to survive redeploys.
-function restoreAuthFromEnv() {
-  if (!process.env.AUTH_DATA) return;
-  if (fs.existsSync(AUTH_FOLDER) && fs.readdirSync(AUTH_FOLDER).length > 0) return;
+const msgStore = new Map();
+
+// ── Sesión individual ────────────────────────────────────────────────────────
+function restoreAuth(folder, envKey) {
+  const data = process.env[envKey];
+  if (!data) return;
+  if (fs.existsSync(folder) && fs.readdirSync(folder).length > 0) return;
   try {
-    fs.mkdirSync(AUTH_FOLDER, { recursive: true });
-    const files = JSON.parse(Buffer.from(process.env.AUTH_DATA, 'base64').toString('utf8'));
+    fs.mkdirSync(folder, { recursive: true });
+    const files = JSON.parse(Buffer.from(data, 'base64').toString('utf8'));
     for (const [name, content] of Object.entries(files)) {
-      fs.writeFileSync(path.join(AUTH_FOLDER, name), JSON.stringify(content));
+      fs.writeFileSync(path.join(folder, name), JSON.stringify(content));
     }
-    logger.info('Session restored from AUTH_DATA env var');
+    logger.info(`Session restored from ${envKey}`);
   } catch (err) {
-    logger.warn('Could not restore auth from AUTH_DATA: ' + err.message);
+    logger.warn(`Could not restore auth from ${envKey}: ${err.message}`);
   }
 }
 
-// Serialize current auth_info to a base64 JSON string and log it,
-// so the user can copy it into the AUTH_DATA env var.
-function exportAuthToEnv() {
-  if (!fs.existsSync(AUTH_FOLDER)) return;
+function exportAuth(folder, envKey) {
+  if (!fs.existsSync(folder)) return;
   try {
     const files = {};
-    for (const f of fs.readdirSync(AUTH_FOLDER)) {
-      const full = path.join(AUTH_FOLDER, f);
+    for (const f of fs.readdirSync(folder)) {
+      const full = path.join(folder, f);
       if (fs.statSync(full).isFile()) {
         try { files[f] = JSON.parse(fs.readFileSync(full, 'utf8')); } catch { files[f] = fs.readFileSync(full, 'utf8'); }
       }
     }
     const encoded = Buffer.from(JSON.stringify(files)).toString('base64');
-    logger.info('AUTH_DATA (copy this to Railway env var):\n' + encoded);
-    console.log('\n>>> AUTH_DATA para Railway (copiá este valor como variable de entorno AUTH_DATA):\n' + encoded + '\n');
+    console.log(`\n>>> ${envKey} para Railway:\n${encoded}\n`);
   } catch (err) {
-    logger.warn('Could not export auth: ' + err.message);
+    logger.warn(`Could not export auth ${envKey}: ${err.message}`);
   }
 }
 
-restoreAuthFromEnv();
+async function startOneWhatsApp(pairingNumber, authFolder, authEnvKey, idx) {
+  restoreAuth(authFolder, authEnvKey);
 
-if (process.env.CLEAR_AUTH === 'true' && fs.existsSync(AUTH_FOLDER)) {
-  fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
-  logger.info('auth_info cleared (CLEAR_AUTH=true)');
-}
-
-const PAIRING_NUMBER = process.env.PAIRING_NUMBER;
-
-// Module-level message store for getMessage retries.
-// Keyed by message ID — persists across reconnects.
-const msgStore = new Map();
-
-let currentSock = null;
-let reconnectTimer = null;
-let latestQR = null;
-
-function getLatestQR() { return latestQR; }
-
-async function startWhatsApp() {
-  const authExists = fs.existsSync(AUTH_FOLDER) && fs.readdirSync(AUTH_FOLDER).length > 0;
-  logger.info(`auth_info folder: ${AUTH_FOLDER} | exists: ${authExists} | files: ${authExists ? fs.readdirSync(AUTH_FOLDER).join(', ') : 'none'}`);
-
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-
-  const sockOptions = {
-    auth: state,
-    printQRInTerminal: false,
-    logger: pino({ level: 'silent' }),
-    generateHighQualityLinkPreview: false,
-    browser: ['Chrome (Linux)', '', ''],
-    getMessage: async (key) => msgStore.get(key.id),
-  };
-
-  // Close previous socket to avoid stream conflicts (code 440)
-  if (currentSock) {
-    try { currentSock.end(); } catch {}
-    currentSock = null;
+  if (process.env.CLEAR_AUTH === 'true' && fs.existsSync(authFolder)) {
+    fs.rmSync(authFolder, { recursive: true, force: true });
   }
 
-  const sock = makeWASocket(sockOptions);
-  currentSock = sock;
-  global.whatsappSock = sock;
+  const authExists = fs.existsSync(authFolder) && fs.readdirSync(authFolder).length > 0;
+  logger.info(`[WA${idx}] auth: ${authFolder} | exists: ${authExists}`);
 
-  sock.ev.on('creds.update', saveCreds);
+  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
 
+  let currentSock = null;
+  let reconnectTimer = null;
   let pairingRequested = false;
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      latestQR = qr;
-      if (PAIRING_NUMBER && !pairingRequested) {
-        pairingRequested = true;
-        try {
-          const code = await sock.requestPairingCode(PAIRING_NUMBER);
-          logger.info(`Pairing code: ${code}`);
-          console.log(`\n>>> Ingresa este codigo en WhatsApp > Dispositivos vinculados > Vincular con numero: ${code}\n`);
-        } catch (err) {
-          logger.error(`Failed to get pairing code: ${err.message}`);
+  async function connect() {
+    if (currentSock) { try { currentSock.end(); } catch {} currentSock = null; }
+    pairingRequested = false;
+
+    const sockOptions = {
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: 'silent' }),
+      generateHighQualityLinkPreview: false,
+      retryRequestDelayMs: 250,
+      getMessage: async (key) => {
+        const stored = msgStore.get(key.id);
+        if (stored) return stored;
+        // Return minimal stub so Baileys can resend with fresh keys
+        return { conversation: '' };
+      },
+    };
+    if (!pairingNumber) sockOptions.browser = ['Chrome (Linux)', '', ''];
+
+    const sock = makeWASocket(sockOptions);
+
+    currentSock = sock;
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        if (!pairingNumber) {
           qrcode.generate(qr, { small: true });
+          logger.info(`[WA${idx}] Escaneá el QR de arriba con WhatsApp`);
         }
-      } else if (!PAIRING_NUMBER) {
-        const QRCode = require('qrcode');
-        const qrString = await QRCode.toString(qr, { type: 'utf8', small: false });
-        console.log('\n\n========= ESCANEÁ ESTE QR CON WHATSAPP =========\n');
-        console.log(qrString);
-        console.log('=================================================\n');
-      }
-    }
-
-    if (connection === 'close') {
-      if (sock !== currentSock) return;
-
-      const code = lastDisconnect?.error?.output?.statusCode;
-      logger.warn(`Connection closed (code ${code})`);
-
-      if (code === DisconnectReason.loggedOut) {
-        logger.warn('Session logged out. Clearing auth and reconnecting...');
-        try { fs.rmSync(AUTH_FOLDER, { recursive: true, force: true }); } catch {}
-      }
-
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(async () => {
-        reconnectTimer = null;
-        try { await startWhatsApp(); } catch (err) {
-          logger.error('Reconnect failed:', err.message);
-        }
-      }, 5000);
-    }
-
-    if (connection === 'open') {
-      latestQR = null;
-      logger.info('WhatsApp connected successfully');
-      global.whatsappSock = sock;
-      exportAuthToEnv();
-      try {
-        const results = await sock.onWhatsApp(process.env.ADMIN_NUMBER);
-        logger.info(`onWhatsApp result for Admin: ${JSON.stringify(results)}`);
-        if (results?.length > 0) {
-          setDrJid(results[0].jid);
-          logger.info(`Admin JID resolved: ${results[0].jid}`);
-          if (results[0].lid) {
-            setDrJid(results[0].lid);
-            logger.info(`Admin LID set as send target: ${results[0].lid}`);
+        if (pairingNumber && !pairingRequested) {
+          pairingRequested = true;
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const code = await sock.requestPairingCode(pairingNumber);
+            console.log(`\n>>> [WA${idx}] Código para ${pairingNumber}: ${code}\n`);
+          } catch (err) {
+            logger.error(`[WA${idx}] Pairing code error: ${err.message}`);
+            pairingRequested = false;
           }
-        } else {
-          logger.warn('onWhatsApp returned no results for ADMIN_NUMBER');
         }
-      } catch (e) {
-        logger.warn(`Could not resolve Admin JID: ${e.message}`);
-      }
-    }
-  });
-
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    for (const msg of messages) {
-      // Store every message (in and out) so getMessage can serve retries
-      if (msg.key?.id && msg.message) {
-        msgStore.set(msg.key.id, msg.message);
       }
 
-      if (type !== 'notify') continue;
-      if (msg.key.fromMe) continue;
-      if (!msg.message) continue;
+      if (connection === 'close') {
+        if (sock !== currentSock) return;
+        const code = lastDisconnect?.error?.output?.statusCode;
+        logger.warn(`[WA${idx}] Connection closed (code ${code})`);
+        if (code === DisconnectReason.loggedOut) {
+          try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch {}
+        }
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(async () => {
+          reconnectTimer = null;
+          try { await connect(); } catch (err) { logger.error(`[WA${idx}] Reconnect failed: ${err.message}`); }
+        }, 5000);
+      }
 
-      const jid = msg.key.remoteJid;
-      if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
+      if (connection === 'open') {
+        logger.info(`[WA${idx}] WhatsApp connected — ${pairingNumber}`);
+        if (idx === 1) global.whatsappSock = sock;
+        // Keep global socks array up to date after reconnects
+        if (global.whatsappSocks) global.whatsappSocks[idx - 1] = sock;
+        exportAuth(authFolder, authEnvKey);
+        if (idx === 1) {
+          try {
+            const results = await sock.onWhatsApp(process.env.ADMIN_NUMBER);
+            if (results?.length > 0) {
+              setDrJid(results[0].jid);
+              if (results[0].lid) setDrJid(results[0].lid);
+              logger.info(`Admin JID resolved: ${results[0].jid}`);
+            }
+          } catch (e) { logger.warn(`Could not resolve Admin JID: ${e.message}`); }
+        }
+      }
+    });
 
-      await handleMessage(sock, msg, msg.pushName || null);
-    }
-  });
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      for (const msg of messages) {
+        if (msg.key?.id && msg.message) msgStore.set(msg.key.id, msg.message);
+        if (type !== 'notify') continue;
+        if (msg.key.fromMe) continue;
+        if (!msg.message) continue;
+        const jid = msg.key.remoteJid;
+        if (jid.endsWith('@g.us') || jid.endsWith('@newsletter')) continue;
+        if (idx === 1) await handleMessage(sock, msg, msg.pushName || null);
+      }
+    });
 
-  return sock;
+    return sock;
+  }
+
+  return connect();
 }
 
-module.exports = { startWhatsApp, getLatestQR };
+// ── Iniciar todos los números configurados ───────────────────────────────────
+async function startWhatsApp() {
+  const numbers = PAIRING_NUMBERS.length > 0 ? PAIRING_NUMBERS : [undefined];
+
+  const socks = await Promise.all(numbers.map((num, i) => {
+    const idx = i + 1;
+    const folder = idx === 1
+      ? path.join(process.cwd(), 'auth_info')
+      : path.join(process.cwd(), `auth_info_${idx}`);
+    const envKey = idx === 1 ? 'AUTH_DATA' : `AUTH_DATA_${idx}`;
+    return startOneWhatsApp(num, folder, envKey, idx);
+  }));
+
+  global.whatsappSocks = socks;
+  global.whatsappSock  = socks[0];
+
+  logger.info(`${socks.length} número(s) de WhatsApp iniciados`);
+  return socks;
+}
+
+module.exports = { startWhatsApp };
