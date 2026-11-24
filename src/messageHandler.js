@@ -112,11 +112,17 @@ async function handleDrCastroMessage(sock, msg) {
   const reply = async (str) => {
     const txt = typeof str === 'string' ? str : str?.text;
     await new Promise(r => setTimeout(r, 2000));
-    try {
-      await sock.sendMessage(replyJid, { text: String(txt ?? '') });
-      logger.info(`[Admin] reply sent to ${replyJid}`);
-    } catch (err) {
-      logger.warn(`[Admin] reply failed to ${replyJid}: ${err.message}`);
+    // Try all sockets: WA2/WA3 first (known working), WA1 as last resort
+    const allSocks = (global.whatsappSocks || [sock]).filter(s => s);
+    const ordered = [...allSocks.slice(1), allSocks[0]].filter(Boolean);
+    for (const s of ordered) {
+      try {
+        await s.sendMessage(replyJid, { text: String(txt ?? '') });
+        logger.info(`[Admin] reply sent to ${replyJid}`);
+        return;
+      } catch (err) {
+        logger.warn(`[Admin] reply failed via socket: ${err.message}`);
+      }
     }
   };
 
